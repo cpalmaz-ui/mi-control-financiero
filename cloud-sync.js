@@ -7,6 +7,8 @@ const firebaseConfig = {
 const projectId = 'mi-control-financiero-e72c3';
 const maxBackupBytes = 900000;
 const status = document.getElementById('cloud-status');
+const title = document.getElementById('cloud-title');
+const dashboard = document.getElementById('finance-workspace');
 const buttons = Object.fromEntries(
   ['login', 'open', 'import', 'save', 'refresh', 'logout'].map(name =>
     [name, document.getElementById('cloud-' + name)])
@@ -40,6 +42,8 @@ async function start() {
   let busy = false;
 
   function controls() {
+    dashboard.hidden = !workspace;
+    title.textContent = account ? 'Mi cuenta' : 'Inicia sesión para continuar';
     buttons.login.hidden = Boolean(account);
     buttons.open.hidden = !account || Boolean(workspace);
     buttons.import.hidden = !workspace || workspace.revision !== 0 || workspace.dirty;
@@ -121,8 +125,23 @@ async function start() {
     accountStatus(revision ? 'Respaldo de la cuenta abierto.' : 'Cuenta sin respaldo. Puedes comenzar o importar los datos de este dispositivo.');
   }
 
-  buttons.login.onclick = () => perform(() =>
-    authentication.signInWithPopup(auth, new authentication.GoogleAuthProvider()));
+  function setAccount(user) {
+    if (account?.uid === user?.uid) return;
+    if (workspace) {
+      dashboard.hidden = true;
+      switchWorkspace(null);
+      workspace = null;
+    }
+    account = user;
+    accountStatus(user ? 'Sesión iniciada. Abriendo tus datos…' : 'Entra con Google para abrir tu espacio privado.');
+    controls();
+  }
+
+  buttons.login.onclick = () => perform(async () => {
+    const { user } = await authentication.signInWithPopup(auth, new authentication.GoogleAuthProvider());
+    setAccount(user);
+    await openWorkspace();
+  });
   buttons.open.onclick = () => perform(openWorkspace);
   buttons.import.onclick = () => perform(() => {
     requireAccount(account);
@@ -172,11 +191,12 @@ async function start() {
   });
 
   authentication.onAuthStateChanged(auth, user => {
-    if (account?.uid !== user?.uid && workspace) switchWorkspace(null);
-    if (account?.uid !== user?.uid) workspace = null;
-    account = user;
-    accountStatus(user ? 'Sesión iniciada. Estás viendo los datos de este dispositivo.' : 'Modo dispositivo. Los cambios se guardan en este navegador.');
-    controls();
+    if (account?.uid === user?.uid) {
+      if (!user) accountStatus('Entra con Google para abrir tu espacio privado.');
+      controls();
+      return;
+    }
+    setAccount(user);
   });
   window.addEventListener('beforeunload', event => {
     if (!workspace?.dirty) return;
@@ -185,4 +205,4 @@ async function start() {
   });
 }
 
-start().catch(() => writeStatus('Modo dispositivo. No se pudo cargar la sincronización.'));
+start().catch(() => writeStatus('No se pudo conectar para iniciar sesión. Revisa tu conexión y recarga la página.'));
