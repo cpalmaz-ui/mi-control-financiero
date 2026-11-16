@@ -1,5 +1,9 @@
-// Add the registered web app's Firebase configuration after approval.
-const firebaseConfig = null;
+const firebaseConfig = {
+  "apiKey": "AIzaSyCogTgyYBGD7O9sHGV7o0j3OLMs21OApvQ",
+  "authDomain": "mi-control-financiero-e72c3.firebaseapp.com",
+  "projectId": "mi-control-financiero-e72c3",
+  "appId": "1:533562307996:web:427b52b3816ca8540d4459"
+};
 const projectId = 'mi-control-financiero-e72c3';
 const maxBackupBytes = 900000;
 const status = document.getElementById('cloud-status');
@@ -13,7 +17,6 @@ function writeStatus(message) {
 }
 
 async function start() {
-  if (firebaseConfig === null) return;
   if (firebaseConfig.projectId !== projectId) {
     writeStatus('Modo dispositivo. La configuración apunta a otro proyecto.');
     return;
