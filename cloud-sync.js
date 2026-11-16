@@ -32,7 +32,7 @@ async function start() {
   ]);
   const app = application.initializeApp(firebaseConfig);
   const auth = authentication.initializeAuth(app, {
-    persistence: authentication.inMemoryPersistence,
+    persistence: [authentication.browserSessionPersistence, authentication.inMemoryPersistence],
     popupRedirectResolver: authentication.browserPopupRedirectResolver
   });
   const database = firestore.getFirestore(app);
@@ -101,14 +101,45 @@ async function start() {
     return { revision: record.revision, data };
   }
 
+  function draftKey(user) {
+    return 'mi-control-financiero:pendiente:' + projectId + ':' + user.uid;
+  }
+
+  function readDraft(user) {
+    let saved;
+    try { saved = sessionStorage.getItem(draftKey(user)); } catch { return null; }
+    if (!saved) return null;
+    const draft = JSON.parse(saved);
+    if (!Number.isSafeInteger(draft.revision) || draft.revision < 0 || typeof draft.payload !== 'string') {
+      throw new Error('El borrador de esta pestaña tiene un formato incompatible.');
+    }
+    return draft;
+  }
+
+  function storeDraft(user, revision, payload) {
+    try {
+      sessionStorage.setItem(draftKey(user), JSON.stringify({ revision, payload }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function clearDraft(user) {
+    try { sessionStorage.removeItem(draftKey(user)); } catch { /* Storage is unavailable. */ }
+  }
+
   function editNotice() {
     workspace.dirty = true;
     workspace.generation++;
-    accountStatus('Cambios en esta sesión pendientes de guardar.');
+    const recoverable = storeDraft(account, workspace.revision, JSON.stringify(state));
+    accountStatus(recoverable
+      ? 'Cambios pendientes. Puedes recuperarlos si recargas esta pestaña.'
+      : 'Cambios pendientes. Guarda en tu cuenta o exporta antes de salir.');
     controls();
   }
 
-  async function openWorkspace() {
+  async function openWorkspace({ discardDraft = false } = {}) {
     const current = account;
     const initialWorkspace = workspace;
     const initialGeneration = workspace?.generation;
@@ -119,10 +150,23 @@ async function start() {
       throw new Error('Editaste mientras se cargaba el respaldo. Tus cambios siguen abiertos.');
     }
     const { revision, data } = decode(snapshot);
-    const next = { revision, dirty: false, generation: 0, changed: editNotice };
-    switchWorkspace(next, data);
+    const draft = discardDraft ? null : readDraft(current);
+    const alreadySaved = draft && revision > draft.revision && draft.payload === snapshot.data()?.payload;
+    const pending = draft && !alreadySaved;
+    const next = {
+      revision: pending ? draft.revision : revision,
+      dirty: Boolean(pending), generation: 0, changed: editNotice
+    };
+    switchWorkspace(next, pending ? JSON.parse(draft.payload) : data);
     workspace = next;
-    accountStatus(revision ? 'Respaldo de la cuenta abierto.' : 'Cuenta sin respaldo. Puedes comenzar o importar los datos de este dispositivo.');
+    if (discardDraft || alreadySaved) clearDraft(current);
+    if (pending) {
+      accountStatus(draft.revision === revision
+        ? 'Cambios pendientes recuperados de esta pestaña.'
+        : 'Cambios pendientes recuperados. Existe una versión distinta en tu cuenta. Exporta los cambios para conservarlos antes de recargar.');
+    } else {
+      accountStatus(revision ? 'Respaldo de la cuenta abierto.' : 'Cuenta sin respaldo. Puedes comenzar o importar los datos de este dispositivo.');
+    }
   }
 
   function setAccount(user) {
@@ -166,6 +210,7 @@ async function start() {
       const latest = await transaction.get(reference);
       requireAccount(current);
       const actual = latest.exists() ? latest.data().revision : 0;
+      if (actual === expected + 1 && latest.data().payload === payload) return;
       if (actual !== expected) {
         throw new Error('Otro dispositivo guardó una versión más reciente. Exporta tus cambios antes de recargar.');
       }
@@ -179,15 +224,24 @@ async function start() {
     requireAccount(current);
     working.revision = expected + 1;
     working.dirty = working.generation !== generation;
-    accountStatus(working.dirty ? 'Respaldo guardado. Quedan cambios nuevos pendientes.' : 'Respaldo guardado en tu cuenta.');
+    if (working.dirty) {
+      editNotice();
+    } else {
+      clearDraft(current);
+      accountStatus('Respaldo guardado en tu cuenta.');
+    }
   });
   buttons.refresh.onclick = () => perform(async () => {
-    if (workspace?.dirty && !confirm('¿Descartar los cambios pendientes y abrir el respaldo de la cuenta?')) return;
-    await openWorkspace();
+    const discardDraft = Boolean(workspace?.dirty);
+    if (discardDraft && !confirm('¿Descartar los cambios pendientes y abrir el respaldo de la cuenta? Puedes cancelar y exportar una copia JSON primero.')) return;
+    await openWorkspace({ discardDraft });
   });
   buttons.logout.onclick = () => perform(async () => {
-    if (workspace?.dirty && !confirm('Hay cambios pendientes. ¿Cerrar sesión y descartarlos?')) return;
+    const current = account;
+    const discardDraft = Boolean(workspace?.dirty);
+    if (discardDraft && !confirm('¿Cerrar sesión y descartar los cambios pendientes? Puedes cancelar y exportar una copia JSON primero.')) return;
     await authentication.signOut(auth);
+    if (discardDraft) clearDraft(current);
   });
 
   authentication.onAuthStateChanged(auth, user => {
@@ -197,6 +251,7 @@ async function start() {
       return;
     }
     setAccount(user);
+    if (user && !busy) void perform(openWorkspace);
   });
   window.addEventListener('beforeunload', event => {
     if (!workspace?.dirty) return;
